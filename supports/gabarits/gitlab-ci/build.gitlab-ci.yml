@@ -1,0 +1,21 @@
+# Gabarit variante GitLab CI - amorce (= .github/workflows/ci.yml du fork de reference).
+# Chez l'etudiant : .gitlab/ci/build.yml
+#
+# Versions verifiees le 2026-09 :
+#   image node:24   (npm 11 ; le npm 10.9.x de node:24 plante sur les peers de vitest)
+#
+# ATTENTION : npm ci declenche le postinstall de Juice Shop, qui compile le frontend Angular.
+# Compter 8 a 12 min par job. C'est le meme cout qu'avec le job `build` de GitHub Actions,
+# et il pese lourd sur le quota de 400 min/mois de GitLab Free.
+
+build:
+  extends: .node
+  stage: build
+  script:
+    - npm run build
+
+lint:
+  extends: .node
+  stage: build
+  script:
+    - npm run lint

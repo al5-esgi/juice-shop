@@ -1,0 +1,69 @@
+# Gabarit S3 - SAST (Semgrep) + detection de secrets (gitleaks).
+# ETAT DE DEPART = jalon J1 du TP. L'etudiant complete en J2 :
+#   - le second --config vers .semgrep/ (regles ciblees weak-crypto / hardcoded-secret)
+#   - le step "Seuil de blocage"
+#   - le job secret-detection
+#
+# Versions verifiees le 2026-09-05 :
+#   actions/checkout@v7 (runtime node24) - semgrep/semgrep:1.145.0 - gitleaks-action@v3
+#   github/codeql-action/upload-sarif@v3
+#
+# ATTENTION : ne PAS utiliser `semgrep ci`, qui refuse --config et exige un SEMGREP_APP_TOKEN.
+# Sans token, la commande correcte est `semgrep scan --config=...`.
+# ATTENTION : ne PAS mettre `container: image: semgrep/semgrep` au niveau du job. L'image est
+# basee sur Alpine et ne contient pas Node : les actions JavaScript (checkout, upload-sarif)
+# ne s'y executent pas de facon fiable. On lance Semgrep via `docker run` depuis ubuntu-latest.
+name: sast
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+  security-events: write   # necessaire pour l'upload SARIF vers l'onglet Security
+
+jobs:
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Semgrep scan
+        id: semgrep
+        continue-on-error: true          # on laisse le step finir pour produire le SARIF
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src semgrep/semgrep:1.145.0 \
+            semgrep scan --config=p/ci \
+              --sarif --output=semgrep.sarif --error --metrics=off \
+              lib routes models
+
+      - name: Upload SARIF vers l'onglet Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      # J2 - a ajouter : le seuil de blocage explicite.
+      # --error fait sortir Semgrep en code 1 des qu'il y a un finding ; continue-on-error
+      # capture ce code dans steps.semgrep.outcome sans tuer le job ; ce step en fait une decision.
+      #
+      # - name: Seuil de blocage
+      #   if: steps.semgrep.outcome == 'failure'
+      #   run: |
+      #     echo "::error::Semgrep a remonte des findings bloquants"
+      #     exit 1
+
+  # J2 - a ajouter : le job de detection de secrets.
+  # fetch-depth: 0 est obligatoire, sinon gitleaks ne voit qu'un seul commit.
+  # Sur un fork appartenant a un compte personnel, aucune licence gitleaks n'est requise.
+  #
+  # secret-detection:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v7
+  #       with:
+  #         fetch-depth: 0
+  #     - uses: gitleaks/gitleaks-action@v3
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #         GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"

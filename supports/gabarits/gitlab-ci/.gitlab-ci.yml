@@ -1,0 +1,44 @@
+# Gabarit variante GitLab CI - racine du pipeline.
+# Equivalent de l'ensemble des .github/workflows/*.yml du module.
+# A placer a la racine du depot. Chaque famille de scan vit dans son propre fichier,
+# ajoute seance apres seance, exactement comme "un fichier par famille" cote GitHub.
+#
+# Voir supports/gabarits/gitlab-ci/README.md pour la table de correspondance et la
+# limite "tier" (Security Dashboard / widget MR = Ultimate ; sur Free on lit les artefacts).
+
+stages:
+  - build
+  - security
+  - gate
+
+# .npmrc de Juice Shop desactive le lock file (package-lock=false) et .gitignore l'exclut :
+# le lock file committe par le formateur des S1 est la condition de tout le reste (npm ci, npm audit).
+variables:
+  GIT_DEPTH: 20            # profondeur par defaut ; les jobs qui ont besoin de l'historique
+                          # complet (gitleaks) la redefinissent a 0 localement.
+
+# Modele de job Node reutilise par build / lint / npm audit.
+.node:
+  image: node:24
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - .npm/
+  before_script:
+    - npm ci --cache .npm --prefer-offline
+
+# Limiter la consommation de minutes CI (quota Free = 400 min/mois) :
+# on ne declenche que sur les branches de travail et les merge requests.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
+include:
+  - local: .gitlab/ci/build.yml
+  # Decommenter au fil des seances :
+  # - local: .gitlab/ci/sast.yml            # S3
+  # - local: .gitlab/ci/supply-chain.yml    # S4
+  # - local: .gitlab/ci/dast.yml            # S5

@@ -1,0 +1,152 @@
+# Gabarit variante GitLab CI - dependances + SBOM + image conteneur.
+# Chez l'etudiant : .gitlab/ci/supply-chain.yml  (equivalent de supply-chain.yml, S4)
+#
+# Versions verifiees le 2026-09 (identiques a la version GitHub) :
+#   osv-scanner v2.5.1   -   trivy 0.74.0   -   node:24
+#
+# ETAT DE DEPART = jalon J1 du TP : npm-audit + osv-scanner + deps-gate.
+# L'etudiant decommente sbom et image-scan en J2 (blocs en bas).
+#
+# DIFFERENCES avec GitHub Actions :
+#   - npm audit et osv-scanner sont DEUX jobs distincts (pas deux steps). En GitLab, deux jobs
+#     tournent en parallele et chacun peut casser le pipeline : plus besoin du continue-on-error
+#     qui, cote GitHub, servait juste a ce que le second scanner tourne quand meme.
+#     On garde malgre tout le decouplage "scan / decision" via allow_failure + deps-gate,
+#     parce que c'est un critere de reussite du TP (le blocage doit etre une decision explicite).
+#   - l'image osv-scanner est distroless (pas de shell) : on installe le binaire pinne avec
+#     `go install`, ce qui reste explicite et reproductible.
+#   - image-scan tourne sur l'image PUBLIEE bkimminich/juice-shop:v20.1.1 : pas de docker:dind,
+#     donc pas de build de 8-12 min. Pour scanner l'image construite par l'etudiant
+#     (Dockerfile.ci / Dockerfile.hardened), voir le bloc dind commente en bas.
+#   - `npm audit` a seulement besoin du lock file : ce job n'installe rien (pas de npm ci).
+#
+# ATTENTION : npm audit exige un package-lock.json committe (ENOLOCK sans lui). Juice Shop ne le
+# versionne pas ; le generer et le committer est le jalon J1 du TP, avant tout scan.
+
+npm-audit:
+  stage: security
+  image: node:24
+  allow_failure: true
+  script:
+    - npm audit --json > npm-audit.json || true
+    - npm audit --audit-level=high || echo "$?" > npm-audit.exit
+  artifacts:
+    when: always
+    paths:
+      - npm-audit.json
+
+osv-scanner:
+  stage: security
+  image: golang:1.23-alpine
+  allow_failure: true
+  variables:
+    GOBIN: /usr/local/bin
+  script:
+    - apk add --no-cache git ca-certificates
+    - go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.5.1
+    - |
+      osv-scanner scan source --lockfile=package-lock.json \
+        --format sarif --output osv.sarif || echo "$?" > osv.exit
+  artifacts:
+    when: always
+    paths:
+      - osv.sarif
+
+# Le "seuil de blocage" explicite : casse le pipeline si l'un des deux scanners a trouve
+# quelque chose au-dessus du seuil. Equivalent du step `if: steps.X.outcome == 'failure'`.
+deps-gate:
+  stage: gate
+  image: alpine:3
+  needs:
+    - job: npm-audit
+      artifacts: true
+    - job: osv-scanner
+      artifacts: true
+  script:
+    - a=$(cat npm-audit.exit 2>/dev/null || echo 0)
+    - o=$(cat osv.exit 2>/dev/null || echo 0)
+    - test "$a" = "0" -a "$o" = "0" || { echo "Vulnerabilite high ou critical dans les dependances"; exit 1; }
+
+# ============================================================================================
+# J2 - a decommenter : le SBOM CycloneDX, informatif (ne bloque rien).
+# Sur Free, artifacts:reports:cyclonedx n'alimente aucune UI, mais le fichier reste
+# telechargeable et exploitable (747 composants sur Juice Shop v20.1.1).
+#
+# sbom:
+#   stage: security
+#   image:
+#     name: aquasec/trivy:0.74.0
+#     entrypoint: [""]
+#   allow_failure: true
+#   script:
+#     - trivy fs --quiet --format cyclonedx --output sbom.cdx.json .
+#   artifacts:
+#     paths:
+#       - sbom.cdx.json
+#     reports:
+#       cyclonedx: sbom.cdx.json
+
+# J2 - a decommenter : scan de l'image PUBLIEE. Trivy la lit a distance, aucun docker pull,
+# aucun dind. Pour scanner VOTRE image, voir le bloc dind tout en bas.
+#
+# image-scan:
+#   stage: security
+#   image:
+#     name: aquasec/trivy:0.74.0
+#     entrypoint: [""]
+#   allow_failure: true
+#   variables:
+#     TRIVY_CACHE_DIR: .trivycache/
+#   script:
+#     - |
+#       trivy image --quiet --scanners vuln --severity HIGH,CRITICAL \
+#         --format sarif --output trivy-image.sarif \
+#         --exit-code 0 bkimminich/juice-shop:v20.1.1
+#     - |
+#       trivy image --quiet --scanners vuln --severity HIGH,CRITICAL \
+#         --format template --template "@/contrib/gitlab.tpl" \
+#         --output gl-container-scanning-report.json \
+#         --exit-code 1 bkimminich/juice-shop:v20.1.1 || echo "$?" > trivy.exit
+#   cache:
+#     paths:
+#       - .trivycache/
+#   artifacts:
+#     when: always
+#     paths:
+#       - trivy-image.sarif
+#     reports:
+#       container_scanning: gl-container-scanning-report.json
+#
+# image-gate:
+#   stage: gate
+#   image: alpine:3
+#   needs:
+#     - job: image-scan
+#       artifacts: true
+#   script:
+#     - code=$(cat trivy.exit 2>/dev/null || echo 0)
+#     - test "$code" = "0" || { echo "Vulnerabilite high ou critical dans l'image"; exit 1; }
+
+# ---------------------------------------------------------------------------------------------
+# VARIANTE de image-scan : scanner l'image que VOUS construisez (Dockerfile.ci / Dockerfile.hardened).
+# Necessite docker:dind. Le build de Juice Shop prend 8 a 12 min (postinstall Angular).
+#
+# image-scan:
+#   stage: security
+#   image: docker:27
+#   services:
+#     - docker:27-dind
+#   allow_failure: true
+#   variables:
+#     DOCKER_TLS_CERTDIR: "/certs"
+#   script:
+#     - docker build -f Dockerfile.ci -t juice-shop:ci .
+#     - |
+#       docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+#         -v "$PWD:/work" -w /work aquasec/trivy:0.74.0 \
+#         image --quiet --scanners vuln --severity HIGH,CRITICAL \
+#         --format sarif --output trivy-image.sarif --exit-code 1 juice-shop:ci \
+#         || echo "$?" > trivy.exit
+#   artifacts:
+#     when: always
+#     paths: [trivy-image.sarif]

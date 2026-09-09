@@ -1,0 +1,118 @@
+# Gabarit S4 - dependances (npm audit + osv-scanner), SBOM CycloneDX, image conteneur (Trivy).
+# ETAT DE DEPART = jalon J1 du TP (job deps-scan seul). L'etudiant ajoute sbom et image-scan en J2.
+#
+# Versions verifiees le 2026-09 via api.github.com/repos/<repo>/releases/latest :
+#   actions/checkout@v7                      (dernier tag v7.0.1)
+#   actions/setup-node@v7                    (v7.0.0, node-version 24 : engines.node = "22 - 26")
+#   actions/upload-artifact@v7               (v7.0.1 ; le gabarit precedent portait v4)
+#   google/osv-scanner-action@v2.5.1         (le gabarit precedent portait v1)
+#   aquasecurity/trivy-action@v0.36.0        (le gabarit precedent portait 0.28.0, sans prefixe v)
+#   github/codeql-action/upload-sarif@v3
+#
+# ATTENTION 1 : `npm audit` exige un package-lock.json committe et sort en ENOLOCK sans lui.
+# Juice Shop ne le versionne pas (.npmrc `package-lock=false` + .gitignore ligne 10). Le generer
+# et le committer est le jalon J1 du TP, avant tout scan.
+#
+# ATTENTION 2 : le sous-chemin de l'action osv-scanner compte. La racine du depot n'est pas une
+# action : c'est bien `google/osv-scanner-action/osv-scanner-action@v2.5.1`. Les arguments passent
+# par `scan-args`, un par ligne. Forme canonique en v2 : `scan source --lockfile=...`.
+#
+# ATTENTION 3 : trivy-action installe Trivy v0.70.0 par defaut. On epingle `version: v0.74.0`
+# pour que les chiffres du TP soient reproductibles. En v0.74.0, `severity:` filtre bien la
+# sortie SARIF (l'input `limit-severities-for-sarif` n'est pas necessaire).
+name: supply-chain
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+  security-events: write   # necessaire pour l'upload SARIF vers l'onglet Security
+
+jobs:
+  deps-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      # npm audit lit le lock file et interroge le registre : quelques secondes, aucune install.
+      # --audit-level=high fait sortir npm en code 1 des qu'il y a un high ou un critical.
+      - name: npm audit
+        id: npm-audit
+        continue-on-error: true
+        run: npm audit --audit-level=high
+
+      # Meme lock file, autre base de donnees (OSV.dev). Sort en code 1 des la premiere vuln.
+      - name: osv-scanner
+        id: osv
+        continue-on-error: true
+        uses: google/osv-scanner-action/osv-scanner-action@v2.5.1
+        with:
+          scan-args: |-
+            scan
+            source
+            --lockfile=package-lock.json
+
+      # Meme mecanique qu'en S3 : les deux scanners vont au bout, la decision d'echec est un step.
+      - name: Seuil de blocage
+        if: steps.npm-audit.outcome == 'failure' || steps.osv.outcome == 'failure'
+        run: |
+          echo "::error::Vulnerabilite high ou critical dans les dependances"
+          exit 1
+
+  # J2 - a ajouter : le SBOM, publie en artefact de workflow (telechargeable depuis le run).
+  #
+  # sbom:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v7
+  #     - name: SBOM CycloneDX
+  #       uses: aquasecurity/trivy-action@v0.36.0
+  #       with:
+  #         version: v0.74.0
+  #         scan-type: fs
+  #         scan-ref: .
+  #         format: cyclonedx
+  #         output: sbom.cdx.json
+  #     - uses: actions/upload-artifact@v7
+  #       with:
+  #         name: sbom-cyclonedx
+  #         path: sbom.cdx.json
+
+  # J2 - a ajouter : le scan de l'image construite depuis Dockerfile.ci.
+  # Le build prend 8 a 12 min (le postinstall de Juice Shop compile le frontend Angular).
+  # `scanners: vuln` evite de refaire la detection de secrets, deja couverte par S3.
+  # Le garde-fou hashFiles() evite un echec d'upload si le build a casse avant de produire le SARIF.
+  #
+  # image-scan:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v7
+  #     - name: Build de l'image
+  #       run: docker build -f Dockerfile.ci -t juice-shop:ci .
+  #     - name: Trivy image
+  #       id: trivy
+  #       continue-on-error: true
+  #       uses: aquasecurity/trivy-action@v0.36.0
+  #       with:
+  #         version: v0.74.0
+  #         scan-type: image
+  #         image-ref: juice-shop:ci
+  #         scanners: vuln
+  #         severity: HIGH,CRITICAL
+  #         format: sarif
+  #         output: trivy-image.sarif
+  #         exit-code: "1"
+  #     - name: Upload SARIF vers l'onglet Security
+  #       if: always() && hashFiles('trivy-image.sarif') != ''
+  #       uses: github/codeql-action/upload-sarif@v3
+  #       with:
+  #         sarif_file: trivy-image.sarif
+  #         category: trivy-image
+  #     - name: Seuil de blocage
+  #       if: steps.trivy.outcome == 'failure'
+  #       run: |
+  #         echo "::error::Vulnerabilite high ou critical dans l'image"
+  #         exit 1

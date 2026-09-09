@@ -1,0 +1,69 @@
+# Gabarit variante GitLab CI - DAST (OWASP ZAP baseline).
+# Chez l'etudiant : .gitlab/ci/dast.yml  (equivalent de dast.yml, S5)
+#
+# Versions verifiees le 2026-09 (identiques a la version GitHub) :
+#   ghcr.io/zaproxy/zaproxy:stable   -   node:24
+#
+# C'EST LE JOB LE PLUS FRAGILE DE LA VARIANTE GitLab. A valider sur un runner gitlab.com
+# avant la seance. Plan B en cas d'echec : la reproduction locale de l'annexe B du TP5,
+# strictement identique sous GitLab (meme image ZAP, meme commande).
+#
+# DIFFERENCES avec GitHub Actions :
+#   - pas d'action zaproxy/action-baseline : on lance l'image ZAP a la main via docker:dind,
+#     exactement comme en local. L'action GitHub ne faisait que ca, plus la publication d'artefact.
+#   - on construit et on lance l'application dans le meme job (dind), puis ZAP la scanne sur
+#     le reseau de l'hote dind.
+#   - le tri des alertes se fait dans .zap/rules.tsv, passe a zap-baseline.py via -c (comme
+#     l'input rules_file_name cote GitHub). Format TSV : <pluginId> <TAB> IGNORE|WARN|FAIL <TAB> (comment).
+#   - phase 1 : allow_failure: true (on observe). Phase 2 : dast-gate relit le code retour
+#     (0 aucune alerte, 1 FAIL, 2 WARN, 3 le scan a echoue).
+#
+# POURQUOI on construit depuis les sources : un DAST sur l'image publiee ne dit rien des
+# correctifs de l'etudiant. Le prix = le build Angular du postinstall, 8 a 12 min, qui pese
+# sur le quota de 400 min/mois de GitLab Free. En entreprise le DAST tourne sur les MR ou la
+# nuit, pas sur chaque push, pour cette raison exactement.
+
+dast:
+  stage: security
+  image: docker:27
+  services:
+    - docker:27-dind
+  allow_failure: true              # phase 1 : on observe. Retirer quand chaque alerte est qualifiee.
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  script:
+    # 1. construire et lancer l'application (Dockerfile upstream de Juice Shop)
+    - docker build -t juice-shop:dast .
+    - docker run -d --name app -p 3000:3000 juice-shop:dast
+    - |
+      for i in $(seq 1 60); do
+        docker run --rm --network host curlimages/curl:8.11.1 -sf -o /dev/null http://localhost:3000/ && break
+        sleep 5
+      done
+    # 2. ZAP baseline, meme image et memes rapports qu'en local
+    - mkdir -p zap-out && chmod 777 zap-out
+    - |
+      docker run --rm --network host \
+        -v "$PWD/zap-out:/zap/wrk/:rw" \
+        -v "$PWD/.zap:/zap/cfg:ro" \
+        ghcr.io/zaproxy/zaproxy:stable \
+        zap-baseline.py -t http://localhost:3000 \
+          -c /zap/cfg/rules.tsv \
+          -J report_json.json -w report_md.md -r report_html.html \
+        || echo "$?" > zap-out/zap.exit
+  artifacts:
+    when: always
+    paths:
+      - zap-out/
+
+# Phase 2 : decommenter pour rendre le job bloquant, une fois chaque alerte residuelle
+# qualifiee dans .zap/rules.tsv. Codes de zap-baseline.py : 0 rien, 1 FAIL, 2 WARN, 3 scan KO.
+# dast-gate:
+#   stage: gate
+#   image: alpine:3
+#   needs:
+#     - job: dast
+#       artifacts: true
+#   script:
+#     - code=$(cat zap-out/zap.exit 2>/dev/null || echo 0)
+#     - test "$code" = "0" || { echo "ZAP baseline a remonte des alertes non qualifiees"; exit 1; }

@@ -1,0 +1,34 @@
+# Gabarit fourni dans le fork de référence - workflow d'amorce (build + lint uniquement).
+# Les étudiants ajoutent sast.yml (S3), supply-chain.yml (S4), dast.yml (S5) à côté.
+#
+# Versions vérifiées le 2026-09-05 :
+#   - actions/checkout@v7      (dernier tag publié : v7.0.1)
+#   - actions/setup-node@v7    (release v7.0.0 du 2026-07)
+#   - node-version: 24         (embarque npm 11 ; le npm 10.9.x de Node 22 plante sur la
+#                               resolution des peers de vitest, cote frontend)
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint

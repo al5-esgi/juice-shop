@@ -1,0 +1,69 @@
+# Gabarit variante GitLab CI - SAST (Semgrep) + detection de secrets (gitleaks).
+# Chez l'etudiant : .gitlab/ci/sast.yml   (equivalent de .github/workflows/sast.yml, S3)
+#
+# Versions verifiees le 2026-09 (identiques a la version GitHub) :
+#   semgrep/semgrep:1.145.0
+#   ghcr.io/gitleaks/gitleaks:latest  (CLI, gitleaks 8.30.x)
+#
+# DIFFERENCES avec GitHub Actions :
+#   - pas de `docker run` : l'image Semgrep EST l'image du job (aucune action JS a faire
+#     tourner a cote, donc le probleme "Alpine sans Node" de GitHub ne se pose pas ici).
+#   - le decouplage "on produit le rapport ET on casse le build" se fait avec
+#     `allow_failure: true` + un job `sast-gate` en stage suivant qui relit le code retour.
+#     C'est l'equivalent exact du couple (continue-on-error, step qui lit steps.X.outcome).
+#   - `semgrep scan --error` ecrit les fichiers de sortie AVANT de sortir en code 1 :
+#     l'artefact est donc toujours disponible, meme quand le job "echoue".
+#
+# ETAT DE DEPART = jalon J1 du TP (config p/ci seule, pas de gate, pas de gitleaks).
+# L'etudiant complete en J2 : le second --config vers .semgrep/, le job sast-gate,
+# le job secret-detection (voir les blocs commentes en bas).
+
+sast:
+  stage: security
+  image:
+    name: semgrep/semgrep:1.145.0
+    entrypoint: [""]
+  allow_failure: true          # le pipeline n'est PAS casse par ce job seul ; en J2, sast-gate tranche
+  script:
+    - |
+      semgrep scan --config=p/ci \
+        --sarif-output=semgrep.sarif \
+        --gitlab-sast-output=gl-sast-report.json \
+        --error --metrics=off \
+        lib routes models || echo "$?" > semgrep.exit
+  artifacts:
+    when: always
+    paths:
+      - semgrep.sarif          # format pivot, lu au jq en S8 (cf. README : pas d'onglet Security sur Free)
+    reports:
+      sast: gl-sast-report.json
+
+# J2 - brancher les regles ciblees : ajouter `--config=.semgrep/` a la commande ci-dessus,
+#      juste apres `--config=p/ci`. Le total passe de 5 a 9 findings.
+
+# J2 - le "seuil de blocage" explicite, en stage separe.
+# sast-gate:
+#   stage: gate
+#   image: alpine:3
+#   needs:
+#     - job: sast
+#       artifacts: true
+#   script:
+#     - code=$(cat semgrep.exit 2>/dev/null || echo 0)
+#     - test "$code" = "0" || { echo "Semgrep a remonte des findings bloquants"; exit 1; }
+
+# J2 - detection de secrets sur l'HISTORIQUE, pas seulement l'arbre courant.
+# GIT_DEPTH: 0 est l'equivalent de fetch-depth: 0 : sans lui GitLab ne clone que 20 commits.
+# secret-detection:
+#   stage: security
+#   image:
+#     name: ghcr.io/gitleaks/gitleaks:latest
+#     entrypoint: [""]
+#   variables:
+#     GIT_DEPTH: 0
+#   script:
+#     - gitleaks git --report-format sarif --report-path gitleaks.sarif --exit-code 1 --redact .
+#   artifacts:
+#     when: always
+#     paths:
+#       - gitleaks.sarif

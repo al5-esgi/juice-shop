@@ -1,0 +1,75 @@
+# Gabarit S5 - DAST (OWASP ZAP baseline) contre l'app lancee en CI.
+# D'abord continue-on-error: true (on observe), puis on retire pour rendre bloquant.
+#
+# Versions verifiees le 2026-09 :
+#   - actions/checkout@v7             (dernier tag publie : v7.0.1, 2026-07-20)
+#   - actions/setup-node@v7           (release v7.0.0, 2026-07)
+#   - zaproxy/action-baseline@v0.15.0 (dernier tag publie : v0.15.0, 2025-10-24)
+#     -> remplace le v0.12.0 des premieres notes de cadrage
+#   - PAS de actions/upload-artifact ici : depuis v0.15.0 l'action ZAP publie elle-meme
+#     report_html.html / report_md.md / report_json.json dans un artefact nomme par
+#     l'input `artifact_name` (defaut : zap_scan).
+#
+# Notes de fonctionnement (verifiees dans dist/index.js de v0.15.0) :
+#   - l'action lance `docker run --network="host" ... zap-baseline.py -t <target>`,
+#     donc http://localhost:3000 est joignable depuis le conteneur ZAP des lors que
+#     l'application ecoute sur le port 3000 du runner.
+#   - `rules_file_name` est passe a zap-baseline.py via `-c` (format TSV :
+#     <pluginId> <TAB> IGNORE|WARN|FAIL <TAB> (commentaire)).
+#   - `fail_action: true` fait echouer le step des la moindre alerte, Low et
+#     Informational comprises : c'est du tout ou rien, le tri se fait dans rules.tsv.
+#   - un echec du scan lui-meme (exit code 3) fait toujours echouer le step.
+#
+# POURQUOI on construit depuis les sources et pas `docker compose up -d`.
+#   Le docker-compose.yml du fork lance l'image publiee bkimminich/juice-shop:v20.1.1,
+#   c'est-a-dire le code de quelqu'un d'autre : un DAST qui la scanne ne dira jamais rien
+#   des correctifs de l'etudiant. Le prix a payer est le `npm ci` (postinstall = build
+#   du frontend Angular) : compter 8 a 12 min, comme le job `build` de S1.
+name: dast
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  dast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Construire et lancer l'application
+        run: |
+          npm ci
+          npm run build:server
+          npm start &
+          for i in $(seq 1 60); do
+            curl -sf -o /dev/null http://localhost:3000/ && break
+            sleep 5
+          done
+          curl -sI http://localhost:3000/ | head -1
+
+      - name: ZAP baseline scan
+        id: zap
+        continue-on-error: true   # phase 1 : on observe. Retirer pour rendre bloquant.
+        uses: zaproxy/action-baseline@v0.15.0
+        with:
+          target: http://localhost:3000
+          rules_file_name: .zap/rules.tsv
+          fail_action: true
+          allow_issue_writing: false
+          artifact_name: zap-baseline-report
+
+      # Phase 2 : decommenter pour transformer le resultat en decision explicite,
+      # sur le meme modele que le job sast de S3. A n'activer qu'une fois chaque
+      # alerte residuelle qualifiee dans .zap/rules.tsv.
+      # - name: Seuil de blocage
+      #   if: steps.zap.outcome == 'failure'
+      #   run: |
+      #     echo "::error::ZAP baseline a remonte des alertes bloquantes"
+      #     exit 1
