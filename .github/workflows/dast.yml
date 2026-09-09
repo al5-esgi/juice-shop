@@ -1,0 +1,47 @@
+# S5 - DAST (OWASP ZAP baseline) contre l'application lancee depuis LES SOURCES.
+#
+# On ne scanne pas l'image publiee bkimminich/juice-shop:v20.1.1 du docker-compose : ce serait
+# le code de quelqu'un d'autre, et le scan ne dirait jamais rien de nos correctifs. Le prix est
+# le npm ci, qui compile le frontend Angular : 8 a 12 min.
+#
+# C'est aussi pourquoi, en production, un DAST ne tourne pas sur chaque commit mais sur les
+# pull requests ou la nuit : il est cher.
+name: dast
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  dast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24        # pas 22 : npm 10.9.x casse le postinstall (cf. ci.yml)
+          cache: npm
+
+      - name: Construire et lancer l'application
+        run: |
+          npm ci
+          npm run build:server
+          npm start &
+          for i in $(seq 1 60); do
+            curl -sf -o /dev/null http://localhost:3000/ && break
+            sleep 5
+          done
+          curl -sI http://localhost:3000/ | head -1
+
+      - name: ZAP baseline scan
+        id: zap
+        continue-on-error: true     # phase 1 : on observe, le seuil est dans .zap/rules.tsv
+        uses: zaproxy/action-baseline@v0.15.0
+        with:
+          target: http://localhost:3000
+          fail_action: true
+          allow_issue_writing: false
+          artifact_name: zap-baseline-report
+          rules_file_name: .zap/rules.tsv
