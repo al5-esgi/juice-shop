@@ -41,4 +41,4 @@ administrateur ; il n'a besoin d'aucun accès privilégié pour commencer, seule
 
 ## 5. Suivi
 
-- Run `ci` de référence : <lien vers le run vert dans l'onglet Actions>
+- Run `ci` de référence : https://github.com/al5-esgi/juice-shop/actions/runs/34329678449 (jobs `build` et `lint` verts, commit `42a515f`)
