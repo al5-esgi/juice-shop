@@ -1,0 +1,79 @@
+# S3 - SAST (Semgrep) + detection de secrets (gitleaks).
+#
+# Semgrep tourne via `docker run` depuis ubuntu-latest, et non en `container:` au niveau du job :
+# l'image semgrep est basee sur Alpine et ne contient pas Node, les actions JavaScript
+# (checkout, upload-sarif) ne s'y executent pas de facon fiable.
+#
+# Perimetre volontairement restreint a `lib routes models` : le frontend Angular n'apporte rien
+# au propos et multiplierait le temps de scan. Mesure de reference : ~6 s, 9 findings.
+name: sast
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+  security-events: write   # necessaire pour l'upload SARIF vers l'onglet Security
+
+jobs:
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Semgrep scan
+        id: semgrep
+        continue-on-error: true          # on laisse le step finir pour produire le SARIF
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src semgrep/semgrep:1.145.0 \
+            semgrep scan --config=p/ci --config=.semgrep/ \
+              --sarif --output=semgrep.sarif --error --metrics=off \
+              lib routes models
+
+      - name: Upload SARIF vers l'onglet Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      # Le blocage est une decision explicite, pas un effet de bord du code de retour :
+      # --error fait sortir Semgrep en 1 des qu'il y a un finding, continue-on-error capture
+      # ce code dans steps.semgrep.outcome sans tuer le job, et ce step en fait le verdict.
+      # C'est ce decouplage qui permet de publier le SARIF ET de casser le build.
+      - name: Seuil de blocage
+        if: steps.semgrep.outcome == 'failure'
+        run: |
+          echo "::error::Semgrep a remonte des findings bloquants"
+          exit 1
+
+  secret-detection:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # sans ca, gitleaks ne voit qu'un seul commit et rate l'historique
+
+      # gitleaks/gitleaks-action@v3 exige une licence sur un compte d'ORGANISATION (gratuit
+      # seulement sur un compte personnel). Ce fork appartient a l'organisation al5-esgi : l'action
+      # s'arrete en 0 s sans rien scanner. On passe donc par l'image officielle, qui fait le meme
+      # travail sans licence. `git` (et non `dir`) scanne bien l'HISTORIQUE, pas l'arbre courant.
+      - name: gitleaks scan de l'historique git
+        id: gitleaks
+        continue-on-error: true          # meme decouplage que le job sast : produire, puis decider
+        run: |
+          docker run --rm -v "$PWD:/path" -w /path ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            git /path --report-format sarif --report-path /path/gitleaks.sarif \
+              --redact --exit-code 1
+
+      - name: Upload du rapport gitleaks
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: gitleaks.sarif
+
+      - name: Seuil de blocage
+        if: steps.gitleaks.outcome == 'failure'
+        run: |
+          echo "::error::gitleaks a detecte des secrets dans l'historique git"
+          exit 1
