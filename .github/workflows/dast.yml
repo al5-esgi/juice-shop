@@ -37,7 +37,6 @@ jobs:
 
       - name: ZAP baseline scan
         id: zap
-        continue-on-error: true     # phase 1 : on observe, le seuil est dans .zap/rules.tsv
         uses: zaproxy/action-baseline@v0.15.0
         with:
           target: http://localhost:3000
