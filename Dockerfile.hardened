@@ -4,6 +4,15 @@
 #   node:24-slim                         debian 12.15    56
 #   gcr.io/distroless/nodejs24-debian13  debian 13.6      0
 # La ligne FROM finale vaut donc 505 vulnerabilites de couche systeme a elle seule.
+#
+# Resultat mesure APRES durcissement, sur l'image construite par ce fichier :
+#   juice-shop:hardened   couche systeme : 0     couche applicative : 49
+#
+# Lecture : le durcissement du Dockerfile fait disparaitre les 505 vulnerabilites SYSTEME,
+# et pas une seule des 49 vulnerabilites APPLICATIVES. Ces dernieres viennent de
+# package-lock.json et ne se corrigent que par une montee de dependance - c'est l'objet du job
+# deps-scan et de docs/security/politique-maj.md, pas d'une ligne FROM. Confondre les deux
+# couches conduit a croire un probleme regle alors qu'on a seulement change de base.
 
 # ---------------------------------------------------------------------------
 # ETAGE 1 - installer : contient npm, la chaine de compilation et les sources.
