@@ -114,3 +114,29 @@ par l'analyse.
 - gitleaks scanné en local sur l'arbre complet remonte 126 entrées, dont l'écrasante majorité vient
   de `build/`, du cache Angular et des fichiers de test, non versionnés ou hors périmètre. En CI,
   le scan porte sur l'historique git : seules les entrées réellement commitées comptent.
+
+## Incident d'outillage : gitleaks et le compte d'organisation
+
+Le job `secret-detection` a d'abord été écrit avec `gitleaks/gitleaks-action@v3`, comme le prévoit
+le gabarit. Le premier run l'a fait échouer **en 0,0 seconde, sans produire d'artefact** : l'action
+n'a jamais scanné quoi que ce soit. Cause : elle est gratuite sur un compte personnel mais exige
+une licence sur un compte d'**organisation**, et ce fork appartient à `al5-esgi`.
+
+Le job était donc rouge pour une raison qui n'a rien à voir avec la sécurité du code — le pire cas
+pour une porte de CI, puisqu'il produit exactement le même signal qu'une vraie détection.
+
+Décision : passage à l'image officielle `ghcr.io/gitleaks/gitleaks:v8.30.1` en `docker run`, qui
+fait le même travail sans licence. La sous-commande retenue est `git` et non `dir`, pour scanner
+l'historique et non l'arbre courant. Le même découplage que dans le job `sast` est conservé :
+`continue-on-error` sur le scan, artefact publié dans tous les cas, puis step de seuil explicite.
+
+## Une exclusion produite par le triage lui-même
+
+Le scan de l'historique remonte à présent `docs/security/triage-s3.md` : ce document cite la chaîne
+base64 de `routes/login.ts:64` pour justifier son verdict. Le finding est un **faux positif** au
+sens strict — il ne s'agit pas d'un identifiant utilisable, mais d'une citation dans une analyse.
+
+C'est un cas instructif : documenter un secret suffit à le faire redétecter. L'exclusion est tracée
+au même titre que les autres, et elle illustre pourquoi une exclusion se pose sur une empreinte
+précise et jamais sur la règle entière — désactiver `generic-api-key` pour faire taire cette ligne
+aveuglerait l'outil sur les 60 autres.

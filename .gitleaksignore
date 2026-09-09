@@ -7,3 +7,9 @@
 # intrinseque a la finalite de Juice Shop, compte inexistant hors du jeu de donnees de demo.
 # A revoir si le fork est deploye ailleurs qu'en local. Voir docs/security/triage-s3.md.
 routes/login.ts:generic-api-key:64
+
+# 2026-09-09 docs/security/triage-s3.md - le document de triage cite la chaine de
+# routes/login.ts:64 pour justifier son verdict. FAUX POSITIF au sens strict : citation dans une
+# analyse, pas un identifiant utilisable. Exclusion posee sur l'empreinte, jamais sur la regle
+# generic-api-key elle-meme, qui reste active sur le reste du depot.
+docs/security/triage-s3.md:generic-api-key:66
