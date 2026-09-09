@@ -1,0 +1,9 @@
+# Exclusions gitleaks - une entree par empreinte, commentee et datee.
+# Toute ligne ici est une decision de risque tracee, revocable, et revue si le contexte change.
+
+# 2026-09-09 routes/login.ts:64 - mot de passe du compte de demonstration
+# bjoern.kimminich@gmail.com, valeur = son e-mail inverse puis encode en base64.
+# Vrai positif (identifiant en clair dans le source), risque ACCEPTE : code de challenge
+# intrinseque a la finalite de Juice Shop, compte inexistant hors du jeu de donnees de demo.
+# A revoir si le fork est deploye ailleurs qu'en local. Voir docs/security/triage-s3.md.
+routes/login.ts:generic-api-key:64
