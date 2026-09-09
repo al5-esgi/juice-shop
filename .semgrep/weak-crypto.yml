@@ -1,0 +1,32 @@
+# Regles ciblees S3 - ce que le ruleset generique p/ci ne trouve pas sur ce code.
+# Rattachement threat model : ligne #4 (Information disclosure, hachage MD5) et
+# ligne #2 (Spoofing, cle privee en dur).
+rules:
+  - id: juiceshop-weak-hash-md5
+    message: >-
+      Hachage MD5 ou SHA-1 sur des donnees sensibles. Ce n'est pas un KDF.
+      Utiliser argon2id ou bcrypt pour un mot de passe.
+    languages: [typescript, javascript]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-327: Use of a Broken or Risky Cryptographic Algorithm"
+      owasp: "A02:2021 Cryptographic Failures"
+    patterns:
+      - pattern-either:
+          - pattern: crypto.createHash("md5")
+          - pattern: crypto.createHash("sha1")
+
+  - id: juiceshop-hardcoded-private-key
+    message: >-
+      Cle privee ou secret en dur dans le code source. Le secret doit vivre
+      hors du depot et etre rotationnable sans redeploiement.
+    languages: [typescript, javascript]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A07:2021 Identification and Authentication Failures"
+    patterns:
+      - pattern-either:
+          - pattern: |
+              $KEY = "=~/-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----/"
+          - pattern: crypto.createHmac($ALGO, "...")

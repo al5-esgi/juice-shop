@@ -1,0 +1,59 @@
+# S3 - SAST (Semgrep) + detection de secrets (gitleaks).
+#
+# Semgrep tourne via `docker run` depuis ubuntu-latest, et non en `container:` au niveau du job :
+# l'image semgrep est basee sur Alpine et ne contient pas Node, les actions JavaScript
+# (checkout, upload-sarif) ne s'y executent pas de facon fiable.
+#
+# Perimetre volontairement restreint a `lib routes models` : le frontend Angular n'apporte rien
+# au propos et multiplierait le temps de scan. Mesure de reference : ~6 s, 9 findings.
+name: sast
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+  security-events: write   # necessaire pour l'upload SARIF vers l'onglet Security
+
+jobs:
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Semgrep scan
+        id: semgrep
+        continue-on-error: true          # on laisse le step finir pour produire le SARIF
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src semgrep/semgrep:1.145.0 \
+            semgrep scan --config=p/ci --config=.semgrep/ \
+              --sarif --output=semgrep.sarif --error --metrics=off \
+              lib routes models
+
+      - name: Upload SARIF vers l'onglet Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      # Le blocage est une decision explicite, pas un effet de bord du code de retour :
+      # --error fait sortir Semgrep en 1 des qu'il y a un finding, continue-on-error capture
+      # ce code dans steps.semgrep.outcome sans tuer le job, et ce step en fait le verdict.
+      # C'est ce decouplage qui permet de publier le SARIF ET de casser le build.
+      - name: Seuil de blocage
+        if: steps.semgrep.outcome == 'failure'
+        run: |
+          echo "::error::Semgrep a remonte des findings bloquants"
+          exit 1
+
+  secret-detection:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # sans ca, gitleaks ne voit qu'un seul commit et rate l'historique
+
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
