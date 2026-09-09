@@ -178,13 +178,34 @@ function configureApp (app: ReturnType<typeof express>, seq: typeof sequelize) {
   /* Compression for all requests */
   app.use(compression())
 
-  /* Bludgeon solution for possible CORS problems: Allow everything! */
-  app.options('*', cors())
-  app.use(cors())
+  /* CORS restreint a l'origine servie par l'application (etait : cors() sans option,
+     donc Access-Control-Allow-Origin: * sur toute l'API). */
+  const corsOptions = { origin: config.get<string>('server.baseUrl'), credentials: true }
+  app.options('*', cors(corsOptions))
+  app.use(cors(corsOptions))
 
   /* Security middleware */
   app.use(helmet.noSniff())
   app.use(helmet.frameguard())
+  app.use(helmet.referrerPolicy({ policy: 'no-referrer' }))
+  app.use(helmet.hsts({ maxAge: 15552000, includeSubDomains: true }))
+  app.use(helmet.contentSecurityPolicy({
+    directives: {
+      defaultSrc: ["'self'"],
+      // 'unsafe-inline' sur script-src est un ARBITRAGE, pas un oubli : le <script> inline de
+      // frontend/src/index.html et le <link onload=...> genere par le build Angular en dependent.
+      // Le retirer suppose de modifier le build du frontend. Risque residuel assume, voir ADR-0001.
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc: ["'self'", 'data:', 'https://fonts.gstatic.com'],
+      imgSrc: ["'self'", 'data:', 'blob:'],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"]
+    }
+  }))
   // app.use(helmet.xssFilter()); // = no protection from persisted XSS via RESTful API
   app.disable('x-powered-by')
   app.use(featurePolicy({
