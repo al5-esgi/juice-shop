@@ -1,0 +1,98 @@
+# S4 - chaine d'approvisionnement : dependances, SBOM, image conteneur.
+# Un fichier par famille de scan : on ne touche pas a sast.yml (S3).
+#
+# Meme mecanique de blocage qu'en S3 : chaque scanner tourne en continue-on-error (sinon le
+# second ne tournerait jamais quand le premier sort en code 1), et un step de seuil transforme
+# les codes de retour en une decision explicite.
+name: supply-chain
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  # Deux analyseurs de composition sur le MEME lock file. Ils ne comptent pas la meme chose :
+  # npm audit compte des PAQUETS affectes (48), osv-scanner compte des VULNERABILITES (82 sur
+  # 31 paquets). Faire tourner les deux est deliberatement redondant : leurs bases de donnees et
+  # leurs regles de resolution different, l'un rattrape ce que l'autre laisse passer.
+  deps-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24        # aligne sur ci.yml : npm 10.9.x (Node 22) casse le postinstall
+
+      - name: npm audit
+        id: npm-audit
+        continue-on-error: true
+        run: npm audit --audit-level=high
+
+      - name: osv-scanner
+        id: osv
+        continue-on-error: true
+        uses: google/osv-scanner-action/osv-scanner-action@v2.5.1
+        with:
+          scan-args: |-
+            scan
+            source
+            --lockfile=package-lock.json
+
+      - name: Seuil de blocage
+        if: steps.npm-audit.outcome == 'failure' || steps.osv.outcome == 'failure'
+        run: |
+          echo "::error::Vulnerabilite high ou critical dans les dependances"
+          exit 1
+
+  # Job INFORMATIF : un SBOM n'est pas un verdict, c'est un inventaire. Il ne bloque rien.
+  # Son interet est le champ purl de chaque composant, qui rend l'inventaire comparable a une
+  # base de vulnerabilites - donc rejouable dans six mois sur le meme artefact.
+  sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: SBOM CycloneDX
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          version: v0.74.0
+          scan-type: fs
+          scan-ref: .
+          format: cyclonedx
+          output: sbom.cdx.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+
+  image-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build de l'image
+        run: docker build -f Dockerfile.ci -t juice-shop:ci .
+      - name: Trivy image
+        id: trivy
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          version: v0.74.0
+          scan-type: image
+          image-ref: juice-shop:ci
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-image.sarif
+          exit-code: "1"
+      - name: Upload SARIF vers l'onglet Security
+        if: always() && hashFiles('trivy-image.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+      - name: Seuil de blocage
+        if: steps.trivy.outcome == 'failure'
+        run: |
+          echo "::error::Vulnerabilite high ou critical dans l'image"
+          exit 1

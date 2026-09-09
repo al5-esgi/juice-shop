@@ -1,0 +1,89 @@
+# Dockerfile.hardened - correction des quatre defauts de Dockerfile.ci.
+# Mesures Trivy du 2026-09-09 (--scanners vuln --severity HIGH,CRITICAL) :
+#   node:24                              debian 12.15   505 vulnerabilites
+#   node:24-slim                         debian 12.15    56
+#   gcr.io/distroless/nodejs24-debian13  debian 13.6      0
+# La ligne FROM finale vaut donc 505 vulnerabilites de couche systeme a elle seule.
+#
+# Resultat mesure APRES durcissement, sur l'image construite par ce fichier :
+#   juice-shop:hardened   couche systeme : 0     couche applicative : 49
+#
+# Lecture : le durcissement du Dockerfile fait disparaitre les 505 vulnerabilites SYSTEME,
+# et pas une seule des 49 vulnerabilites APPLICATIVES. Ces dernieres viennent de
+# package-lock.json et ne se corrigent que par une montee de dependance - c'est l'objet du job
+# deps-scan et de docs/security/politique-maj.md, pas d'une ligne FROM. Confondre les deux
+# couches conduit a croire un probleme regle alors qu'on a seulement change de base.
+
+# ---------------------------------------------------------------------------
+# ETAGE 1 - installer : contient npm, la chaine de compilation et les sources.
+# Rien de cet etage ne se retrouve dans l'image finale, sauf ce qu'on copie
+# explicitement. C'est tout l'interet du multi-stage : l'outillage de build
+# n'est pas une dependance d'execution, il n'a rien a faire en production.
+# ---------------------------------------------------------------------------
+FROM node:24 AS installer
+
+COPY . /juice-shop
+WORKDIR /juice-shop
+
+RUN npm install -g typescript@^6.0.3
+
+# --omit=dev : les 51 devDependencies (sur 117 directes) ne servent qu'a construire
+# et a tester. Les embarquer, c'est agrandir la surface d'attaque sans contrepartie.
+RUN npm install --omit=dev
+RUN npm dedupe --omit=dev
+
+# Le frontend est deja compile dans frontend/dist : ses sources, ses modules et son
+# cache ne servent plus a rien a l'execution.
+RUN rm -rf frontend/node_modules
+RUN rm -rf frontend/.angular
+RUN rm -rf frontend/src/assets
+
+# Les droits sont poses ICI, dans l'etage qui possede encore un shell : l'image
+# distroless finale n'a ni sh ni chown, aucun RUN n'y est possible.
+# chgrp -R 0 + chmod -R g=u : le groupe racine obtient les droits du proprietaire,
+# ce qui laisse l'application ecrire dans logs/ et data/ meme si la plateforme
+# lui impose un uid arbitraire (contrainte des SecurityContext type OpenShift).
+RUN mkdir logs
+RUN chown -R 65532 logs
+RUN chgrp -R 0 ftp/ frontend/dist/ logs/ data/ i18n/
+RUN chmod -R g=u ftp/ frontend/dist/ logs/ data/ i18n/
+
+RUN rm ftp/legal.md || true
+RUN rm i18n/*.json || true
+
+# ---------------------------------------------------------------------------
+# ETAGE 2 - runtime distroless : ni shell, ni gestionnaire de paquets, ni npm.
+# Consequence directe : un attaquant qui obtient une execution de commande n'a
+# pas de /bin/sh pour l'exploiter, et Trivy ne trouve aucun paquet systeme
+# vulnerable puisqu'il n'y a quasiment aucun paquet systeme.
+# ---------------------------------------------------------------------------
+FROM gcr.io/distroless/nodejs24-debian13
+
+WORKDIR /juice-shop
+
+# --chown a la copie, et non un RUN chown apres : chaque RUN cree un layer, et un
+# chown sur l'arborescence complete dupliquerait tous les fichiers dans un layer
+# supplementaire. Ici le proprietaire est pose pendant la copie, sans layer en plus.
+COPY --from=installer --chown=65532:0 /juice-shop .
+
+# uid NUMERIQUE et non `USER node` : l'utilisateur nomme `node` est defini dans
+# l'image node:24, pas dans l'image distroless. Un nom ne se resout que s'il existe
+# dans le /etc/passwd de l'image finale ; un uid numerique est le seul identifiant
+# portable entre les deux etages. 65532 est le `nonroot` conventionnel de distroless.
+USER 65532
+
+EXPOSE 3000
+
+# Chemin direct vers le fichier compile : sans npm dans l'image finale, `npm start`
+# est impossible. L'entrypoint distroless est deja le binaire node.
+CMD ["/juice-shop/build/app.js"]
+
+# ---------------------------------------------------------------------------
+# AUCUN secret en ENV ni en ARG - et ce n'est pas une question de propreté.
+# Un layer est immuable : `docker history` et `trivy image` lisent TOUS les layers,
+# y compris ceux qu'un `RUN rm` ulterieur pretend avoir nettoyes. Le JWT_SECRET de
+# Dockerfile.ci reste lisible par quiconque tire l'image, meme si une couche
+# suivante l'efface. Un secret grave dans une image publiee est un secret publie :
+# il ne se retire pas, il se REVOQUE. Le secret est injecte a l'execution
+# (variable d'environnement du runtime, ou montage d'un gestionnaire de secrets).
+# ---------------------------------------------------------------------------

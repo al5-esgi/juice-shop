@@ -1,0 +1,8 @@
+# Dockerfile.ci - volontairement degrade, support du TP4. Ne PAS deployer.
+FROM node:24
+WORKDIR /juice-shop
+COPY . /juice-shop
+RUN npm install
+ENV JWT_SECRET=cn2VmHqPRq5FYd7hM8yTgKzXwLbEjA4s
+EXPOSE 3000
+CMD ["npm", "start"]
